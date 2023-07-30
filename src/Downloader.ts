@@ -85,6 +85,7 @@ const formatTitle = (title: string) => {
 };
 
 export const queueVideo = async (video: Video) => {
+	if (video.title.startsWith("Captioned")) return null;
 	await getDownloadSempahore();
 	return processVideo(formatTitle(video.title), video).then(releaseDownloadSemaphore);
 };
