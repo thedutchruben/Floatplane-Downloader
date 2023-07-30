@@ -85,7 +85,7 @@ const formatTitle = (title: string) => {
 };
 
 export const queueVideo = async (video: Video) => {
-	if (video.title.startsWith("Captioned")) return null;
+	if (video.title.includes("- Captioned")) return null;
 	await getDownloadSempahore();
 	return processVideo(formatTitle(video.title), video).then(releaseDownloadSemaphore);
 };
@@ -137,8 +137,14 @@ const processVideo = async (fTitle: string, video: Video, retries = 0) => {
 				});
 
 				await new Promise((res, rej) => {
-					downloadRequest.on("end", res);
-					downloadRequest.on("error", rej);
+					downloadRequest.on("end", () => {
+						//toto send discord finish message
+						res();
+					});
+					downloadRequest.on("error", () => {
+						//toto send discord error message
+						rej();
+					});
 				});
 
 				summaryStats._.downloadedMB = summaryStats[fTitle].downloadedMB;
