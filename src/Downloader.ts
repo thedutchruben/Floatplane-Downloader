@@ -136,7 +136,7 @@ const processVideo = async (fTitle: string, video: Video, retries = 0) => {
 					updateSummaryBar();
 				});
 
-				await new Promise((res, rej) => {
+				await new Promise<void>((res, rej) => {
 					downloadRequest.on("end", () => {
 						//toto send discord finish message
 						res();
