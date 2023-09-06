@@ -20,6 +20,7 @@ import type { BlogPost } from "floatplane/creator";
 import type { DeliveryResponse } from "floatplane/cdn";
 import type { ValueOfA } from "@inrixia/helpers/ts";
 import db from "@inrixia/db";
+import { ThrottleGroup, type ThrottleOptions } from "stream-throttle";
 
 const fileExists = async (path: string): Promise<boolean> => {
 	try {
@@ -30,7 +31,7 @@ const fileExists = async (path: string): Promise<boolean> => {
 	}
 };
 
-export enum VideoState {
+enum VideoState {
 	Missing,
 	Partial,
 	Muxed,
@@ -44,6 +45,8 @@ type Attachment = {
 	channelTitle: string;
 };
 
+const byteToMbits = 131072;
+
 export class Video {
 	private description: BlogPost["text"];
 	private releaseDate: Date;
@@ -54,10 +57,14 @@ export class Video {
 	public title: BlogPost["title"];
 	public channelTitle: string;
 
+	public static State = VideoState;
+
 	private static OriginSelector = 0;
 	private originSelector = Video.OriginSelector;
 
 	private static Attachments = db<Record<string, Attachment>>(`./db/attachments.json`);
+
+	private static ThrottleGroup = settings.maxDownloadSpeed > -1 ? new ThrottleGroup({ rate: settings.maxDownloadSpeed * byteToMbits }) : undefined;
 
 	private folderPath: string;
 	private filePath: string;
@@ -294,7 +301,10 @@ export class Video {
 
 		const downloadRequest = fApi.got.stream(`${downloadOrigin.url}${downloadVariant.url}`, requestOptions);
 		// Pipe the download to the file once response starts
-		downloadRequest.pipe(createWriteStream(this.partialPath, writeStreamOptions));
+		const writeStream = createWriteStream(this.partialPath, writeStreamOptions);
+		if (Video.ThrottleGroup) downloadRequest.pipe(Video.ThrottleGroup.throttle(<ThrottleOptions>(<unknown>null))).pipe(writeStream);
+		downloadRequest.pipe(writeStream);
+
 		// Set the videos expectedSize once we know how big it should be for download validation.
 		downloadRequest.once("downloadProgress", (progress) => this.attrStore().then((attrStore) => (attrStore.partialBytes = progress.total)));
 
@@ -349,8 +359,8 @@ export class Video {
 						error.message += stderr;
 						reject(error);
 					} else resolve(stdout);
-				}
-			)
+				},
+			),
 		);
 		await fs.unlink(this.partialPath);
 		// Set the files update time to when the video was released

@@ -10,6 +10,7 @@ import type { BlogPost } from "floatplane/creator";
 import { Video } from "./Video.js";
 
 import { settings } from "./helpers.js";
+import { ItemCache } from "./Caches.js";
 
 const removeRepeatedSentences = (postTitle: string, attachmentTitle: string) => {
 	const separators = /(?:\s+|^)((?:[^.,;:!?-]+[\s]*[.,;:!?-]+)+)(?:\s+|$)/g;
@@ -24,14 +25,29 @@ const removeRepeatedSentences = (postTitle: string, attachmentTitle: string) => 
 	return `${postTitle.trim()} - ${uniqueAttachmentTitleSentences.join("").trim()}`.trim().replace(/[\s]*[.,;:!?-]+[\s]*$/, "");
 };
 
+type BlogPosts = typeof fApi.creator.blogPostsIterable;
 export default class Subscription {
 	public channels: SubscriptionSettings["channels"];
 
 	public readonly creatorId: string;
 
+	private static AttachmentsCache = new ItemCache("./db/attachmentCache.json", fApi.content.video, 24 * 60);
+
+	private static PostCache = new ItemCache("./db/postCache.json", fApi.creator.blogPosts, 60);
+	private static async *PostIterable(creatorGUID: Parameters<BlogPosts>["0"], options: Parameters<BlogPosts>["1"]): ReturnType<BlogPosts> {
+		let fetchAfter = 0;
+		// First request should always not hit cache incase looking for new videos
+		let blogPosts = await Subscription.PostCache.get(creatorGUID, { ...options, fetchAfter }, true);
+		while (blogPosts.length > 0) {
+			yield* blogPosts;
+			fetchAfter += 20;
+			// After that use the cached data
+			blogPosts = await Subscription.PostCache.get(creatorGUID, { ...options, fetchAfter });
+		}
+	}
+
 	constructor(subscription: SubscriptionSettings) {
 		this.creatorId = subscription.creatorId;
-
 		this.channels = subscription.channels;
 	}
 
@@ -40,7 +56,7 @@ export default class Subscription {
 			if (channel.daysToKeepVideos !== undefined) {
 				const ignoreBeforeTimestamp = Subscription.getIgnoreBeforeTimestamp(channel);
 				process.stdout.write(
-					chalk`Checking for videos older than {cyanBright ${channel.daysToKeepVideos}} days in channel {yellow ${channel.title}} for {redBright deletion}...`
+					chalk`Checking for videos older than {cyanBright ${channel.daysToKeepVideos}} days in channel {yellow ${channel.title}} for {redBright deletion}...`,
 				);
 				let deletedFiles = 0;
 				let deletedVideos = 0;
@@ -73,7 +89,7 @@ export default class Subscription {
 			const post = { ...blogPost };
 			if (blogPost.videoAttachments.length > 1) {
 				dateOffset++;
-				const { title: attachmentTitle } = await fApi.content.video(attachment);
+				const { title: attachmentTitle } = await Subscription.AttachmentsCache.get(attachment);
 				post.title = removeRepeatedSentences(post.title, attachmentTitle);
 			}
 
@@ -82,7 +98,7 @@ export default class Subscription {
 				for (const identifier of channel.identifiers) {
 					if (typeof identifier.type !== "string")
 						throw new Error(
-							`Value for channel identifier type ${post[identifier.type]} on channel ${channel.title} is of type ${typeof post[identifier.type]} not string!`
+							`Value for channel identifier type ${post[identifier.type]} on channel ${channel.title} is of type ${typeof post[identifier.type]} not string!`,
 						);
 
 					let nextChannel = false;
@@ -150,8 +166,10 @@ export default class Subscription {
 	public async *fetchNewVideos(): AsyncGenerator<Video> {
 		if (settings.floatplane.videosToSearch === 0) return;
 		let videosSearched = 0;
-		for await (const blogPost of fApi.creator.blogPostsIterable(this.creatorId, { hasVideo: true })) {
-			for await (const video of this.matchChannel(blogPost)) yield video;
+		for await (const blogPost of Subscription.PostIterable(this.creatorId, { hasVideo: true })) {
+			for await (const video of this.matchChannel(blogPost)) {
+				if ((await video.getState()) !== Video.State.Muxed) yield video;
+			}
 
 			// Stop searching if we have looked through videosToSearch
 			if (videosSearched++ >= settings.floatplane.videosToSearch) break;
